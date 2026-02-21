@@ -10,7 +10,7 @@
 - **Automatic PR Review**: I review your code when you open a PR. Don't expect praise.
 - **Security Analysis**: SQL injection, XSS... I catch those. You're welcome.
 - **Multi-language**: 한국어도 가능합니다. ...왜 그렇게 보시죠?
-- **Character**: ...I have a personality. Don't expect me to be overly friendly.
+- **Character**: ...I have a personality. Don't expect me to be friendly.
 
 ## Installation
 

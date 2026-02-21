@@ -29,6 +29,9 @@ dmypy.json
 .env
 .env.local
 
+# Private keys
+*.pem
+
 # IDE
 .vscode/
 .idea/
