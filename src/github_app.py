@@ -167,6 +167,43 @@ def format_diff_for_llm(file_diffs: list[FileDiff]) -> str:
 
 CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs'}
 EXCLUDE_PATHS = {'examples/', 'tests/', 'test_', 'docs/', '__pycache__/'}
+MAX_CHUNK_CHARS = 4000
+
+
+def chunk_diff_lines(file_diff: FileDiff, max_chars: int = MAX_CHUNK_CHARS) -> list[FileDiff]:
+    """파일 하나의 diff가 길면 줄 단위로 청크 분할
+
+    Args:
+        file_diff: 원본 FileDiff
+        max_chars: 청크당 최대 글자수
+
+    Returns:
+        분할된 FileDiff 리스트 (짧으면 원본 그대로 1개)
+    """
+    full_text = format_diff_for_llm([file_diff])
+    if len(full_text) <= max_chars:
+        return [file_diff]
+
+    chunks: list[FileDiff] = []
+    current_lines: list[DiffLine] = []
+    current_len = len(f"\n### {file_diff['path']}\n")  # 헤더 길이
+
+    for line in file_diff["lines"]:
+        # 줄 하나의 대략적 길이 추정
+        line_len = len(f"{line['line_number'] or '':>4} + {line['content']}\n")
+
+        if current_len + line_len > max_chars and current_lines:
+            chunks.append({"path": file_diff["path"], "lines": current_lines})
+            current_lines = []
+            current_len = len(f"\n### {file_diff['path']}\n")
+
+        current_lines.append(line)
+        current_len += line_len
+
+    if current_lines:
+        chunks.append({"path": file_diff["path"], "lines": current_lines})
+
+    return chunks
 
 
 def get_pr_diff(repo, pr_number: int) -> list[FileDiff]:
@@ -279,13 +316,16 @@ async def handle_pr_review(payload: dict):
         file_diffs = get_pr_diff(repo, pr_number)
         print(f"[Review] Got {len(file_diffs)} files to review")
 
-        # 파일별로 리뷰 요청 (한 번에 보내면 diff가 너무 길어서 LLM이 못 처리함)
+        # 파일별 → 청크별로 리뷰 요청 (LLM 컨텍스트 한계 대응)
         all_comments: list = []
         for fd in file_diffs:
-            diff_text = format_diff_for_llm([fd])
-            print(f"[Review] Reviewing {fd['path']} ({len(diff_text)} chars)")
-            result = review_diff(diff_text)
-            all_comments.extend(result["comments"])
+            chunks = chunk_diff_lines(fd)
+            for i, chunk in enumerate(chunks):
+                diff_text = format_diff_for_llm([chunk])
+                chunk_label = f" (chunk {i+1}/{len(chunks)})" if len(chunks) > 1 else ""
+                print(f"[Review] Reviewing {fd['path']}{chunk_label} ({len(diff_text)} chars)")
+                result = review_diff(diff_text)
+                all_comments.extend(result["comments"])
 
         if all_comments:
             summary = f"흠. {len(file_diffs)}개 파일을 봤는데... {len(all_comments)}건 지적할 게 있네요."
