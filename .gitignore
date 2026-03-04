@@ -61,5 +61,13 @@ build/
 *.sqlite
 *.sqlite3
 
-# Claude Code (optional)
-# .claude/
+# Claude Code
+.claude/
+
+# 학습용 파일 (git 추적 제외)
+examples/
+docs/SESSION.md
+docs/TIL.md
+docs/ROADMAP.md
+AGENTS.md
+src/llm.py
