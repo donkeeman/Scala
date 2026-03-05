@@ -167,7 +167,7 @@ def format_diff_for_llm(file_diffs: list[FileDiff]) -> str:
 
 CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs'}
 EXCLUDE_PATHS = {'examples/', 'tests/', 'test_', 'docs/', '__pycache__/'}
-MAX_CHUNK_CHARS = 4000
+MAX_CHUNK_CHARS = 6000
 
 
 def chunk_diff_lines(file_diff: FileDiff, max_chars: int = MAX_CHUNK_CHARS) -> list[FileDiff]:
@@ -326,6 +326,18 @@ async def handle_pr_review(payload: dict):
                 print(f"[Review] Reviewing {fd['path']}{chunk_label} ({len(diff_text)} chars)")
                 result = review_diff(diff_text)
                 all_comments.extend(result["comments"])
+
+        # 중복 코멘트 제거 (같은 파일에서 같은 body면 첫 번째만 유지)
+        seen: set[str] = set()
+        unique_comments: list = []
+        for c in all_comments:
+            key = f"{c['path']}:{c['body']}"
+            if key not in seen:
+                seen.add(key)
+                unique_comments.append(c)
+        if len(all_comments) != len(unique_comments):
+            print(f"[Review] Deduplicated: {len(all_comments)} -> {len(unique_comments)} comments")
+        all_comments = unique_comments
 
         if all_comments:
             summary = f"흠. {len(file_diffs)}개 파일을 봤는데... {len(all_comments)}건 지적할 게 있네요."
