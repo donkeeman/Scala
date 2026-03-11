@@ -372,10 +372,12 @@ async def handle_pr_review(payload: dict):
 
                 # 변경된 라인에 있는 Scala 코멘트 auto-resolve
                 changed_lines = get_changed_lines(repo, before, after)
+                print(f"[Review] Changed lines: {changed_lines}")
                 token = get_installation_token(installation_id)
                 for comment in pr.get_review_comments():
                     if comment.user.login != BOT_LOGIN:
                         continue
+                    print(f"[Review] Checking comment: {comment.path}:{comment.line}")
                     file_lines = changed_lines.get(comment.path)
                     if file_lines and comment.line in file_lines:
                         print(f"[Review] Auto-resolving: {comment.path}:{comment.line}")
