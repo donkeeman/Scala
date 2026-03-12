@@ -1,9 +1,10 @@
 """GitHub App Webhook 서버"""
+import asyncio
 import os
 import re
 import httpx
 from typing import TypedDict, Literal
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from github import Github, GithubIntegration
 from dotenv import load_dotenv
 from src.scalar import review_diff, reply_to_comment, summarize_diff, ReviewResult
@@ -335,19 +336,21 @@ BOT_LOGIN = "scala-agent[bot]"
 
 
 @app.post("/webhook")
-async def handle_webhook(request: Request):
-    """GitHub Webhook 핸들러"""
+async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
+    """GitHub Webhook 핸들러 — 즉시 200 반환, 처리는 백그라운드"""
     event_type = request.headers.get("X-GitHub-Event", "")
     payload = await request.json()
     action = payload.get("action")
 
     # 리뷰 코멘트에 대한 답글 처리
     if event_type == "pull_request_review_comment" and action == "created":
-        return await handle_comment_reply(payload)
+        background_tasks.add_task(handle_comment_reply, payload)
+        return {"status": "queued"}
 
     # PR 이벤트 처리
     if event_type == "pull_request" and action in ["opened", "synchronize", "reopened"]:
-        return await handle_pr_review(payload)
+        background_tasks.add_task(handle_pr_review, payload)
+        return {"status": "queued"}
 
     print(f"[Webhook] Ignored: event='{event_type}' action='{action}'")
     return {"status": "ignored", "reason": f"event '{event_type}' action '{action}' not handled"}
