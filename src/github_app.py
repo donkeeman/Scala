@@ -1,12 +1,13 @@
 """GitHub App Webhook 서버"""
+import asyncio
 import os
 import re
 import httpx
 from typing import TypedDict, Literal
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from github import Github, GithubIntegration
 from dotenv import load_dotenv
-from src.scalar import review_diff, reply_to_comment, ReviewResult
+from src.scalar import review_diff, reply_to_comment, summarize_diff, ReviewResult
 
 load_dotenv()
 
@@ -165,7 +166,16 @@ def format_diff_for_llm(file_diffs: list[FileDiff]) -> str:
     return output
 
 
-CODE_EXTENSIONS = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs'}
+EXCLUDE_EXTENSIONS = {
+    '.md', '.txt', '.csv', '.json', '.yaml', '.yml', '.toml', '.xml', '.ini', '.cfg',
+    '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp', '.bmp',
+    '.woff', '.woff2', '.ttf', '.eot', '.otf',
+    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.webm',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.pptx',
+    '.zip', '.tar', '.gz', '.rar', '.7z',
+    '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
+    '.map', '.lock', '.sum',
+}
 EXCLUDE_PATHS = {'examples/', 'tests/', 'test_', 'docs/', '__pycache__/'}
 MAX_CHUNK_CHARS = 6000
 
@@ -221,6 +231,29 @@ def get_changed_files(repo, before: str, after: str) -> set[str]:
     return {f.filename for f in comparison.files}
 
 
+def get_changed_lines(repo, before: str, after: str) -> dict[str, set[int]]:
+    """두 커밋 사이에 변경된 파일별 라인 번호 조회
+
+    Args:
+        repo: PyGithub Repository 객체
+        before: 이전 커밋 SHA
+        after: 새 커밋 SHA
+
+    Returns:
+        {파일경로: {변경된 라인 번호 set}} 딕셔너리
+    """
+    comparison = repo.compare(before, after)
+    changed: dict[str, set[int]] = {}
+    for f in comparison.files:
+        if f.patch:
+            lines = parse_patch(f.patch)
+            changed[f.filename] = {
+                l["line_number"] for l in lines
+                if l["line_number"] is not None and l["type"] == "add"
+            }
+    return changed
+
+
 def get_pr_diff(repo, pr_number: int, only_files: set[str] | None = None) -> list[FileDiff]:
     """PR의 diff를 파싱하여 구조화된 데이터로 반환 (소스 코드만)
 
@@ -248,7 +281,7 @@ def get_pr_diff(repo, pr_number: int, only_files: set[str] | None = None) -> lis
             continue
 
         ext = '.' + file.filename.split('.')[-1] if '.' in file.filename else ''
-        if ext not in CODE_EXTENSIONS:
+        if ext in EXCLUDE_EXTENSIONS:
             continue
 
         if file.patch:
@@ -299,24 +332,27 @@ def post_review(repo, pr_number: int, review_result: ReviewResult, file_diffs: l
     )
 
 
-BOT_LOGIN = "scala-agent[bot]"
+BOT_LOGIN = "scalar-agent[bot]"
 
 
 @app.post("/webhook")
-async def handle_webhook(request: Request):
-    """GitHub Webhook 핸들러"""
+async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
+    """GitHub Webhook 핸들러 — 즉시 200 반환, 처리는 백그라운드"""
     event_type = request.headers.get("X-GitHub-Event", "")
     payload = await request.json()
     action = payload.get("action")
 
     # 리뷰 코멘트에 대한 답글 처리
     if event_type == "pull_request_review_comment" and action == "created":
-        return await handle_comment_reply(payload)
+        background_tasks.add_task(handle_comment_reply, payload)
+        return {"status": "queued"}
 
     # PR 이벤트 처리
     if event_type == "pull_request" and action in ["opened", "synchronize", "reopened"]:
-        return await handle_pr_review(payload)
+        background_tasks.add_task(handle_pr_review, payload)
+        return {"status": "queued"}
 
+    print(f"[Webhook] Ignored: event='{event_type}' action='{action}'")
     return {"status": "ignored", "reason": f"event '{event_type}' action '{action}' not handled"}
 
 
@@ -333,8 +369,9 @@ async def handle_pr_review(payload: dict):
     try:
         gh = get_github_client(installation_id)
         repo = gh.get_repo(repo_full_name)
+        pr = repo.get_pull(pr_number)
 
-        # synchronize: 변경된 파일만 리뷰 (증분)
+        # synchronize: 변경된 파일만 리뷰 (증분) + 해결된 코멘트 auto-resolve
         only_files = None
         if action == "synchronize":
             before = payload.get("before")
@@ -346,8 +383,28 @@ async def handle_pr_review(payload: dict):
                     print("[Review] No files changed, skipping review")
                     return {"status": "skipped", "reason": "no changed files"}
 
+                # 변경된 라인에 있는 Scalar 코멘트 auto-resolve
+                changed_lines = get_changed_lines(repo, before, after)
+                token = get_installation_token(installation_id)
+                for comment in pr.get_review_comments():
+                    if comment.user.login != BOT_LOGIN:
+                        continue
+                    file_lines = changed_lines.get(comment.path)
+                    if file_lines and comment.line in file_lines:
+                        print(f"[Review] Auto-resolving: {comment.path}:{comment.line}")
+                        resolve_review_thread(token, comment.node_id)
+
         file_diffs = get_pr_diff(repo, pr_number, only_files=only_files)
         print(f"[Review] Got {len(file_diffs)} files to review")
+
+        # PR 요약 코멘트 (opened/reopened일 때만)
+        if action in ["opened", "reopened"] and file_diffs:
+            full_diff_text = format_diff_for_llm(file_diffs)
+            summary_input = full_diff_text[:MAX_CHUNK_CHARS] if len(full_diff_text) > MAX_CHUNK_CHARS else full_diff_text
+            print(f"[Review] Generating PR summary ({len(summary_input)} chars)")
+            summary_text = summarize_diff(summary_input)
+            pr.create_issue_comment(summary_text)
+            print("[Review] Posted PR summary comment")
 
         # 파일별 → 청크별로 리뷰 요청 (LLM 컨텍스트 한계 대응)
         all_comments: list = []
@@ -450,7 +507,7 @@ async def handle_comment_reply(payload: dict):
 @app.get("/")
 async def root():
     """Health check"""
-    return {"status": "ok", "message": "Scala Code Review Bot"}
+    return {"status": "ok", "message": "Scalar Code Review Bot"}
 
 
 if __name__ == "__main__":

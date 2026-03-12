@@ -35,7 +35,7 @@ def _call_llm(messages: list[dict], temperature: float = 0.7, json_mode: bool = 
     response = httpx.post(OLLAMA_URL, json=data, timeout=300.0)
     result = response.json()
 
-    if "error" in result or "choices" not in result:
+    if "error" in result or "choices" not in result or len(result["choices"]) == 0:
         return None
     return result
 
@@ -90,6 +90,46 @@ def ask_scalar(prompt: str, code: str = None):
     return result["choices"][0]["message"]["content"]
 
 
+# --- PR 요약용 ---
+
+SUMMARY_SYSTEM_PROMPT = """Code reviewer "Scalar". Cool, blunt personality.
+
+Summarize the PR diff in Korean. Write 3-5 bullet points about what changed.
+
+Tone rules:
+- Use polite Korean (존댓말, ~요 endings). Example: "추가되었네요...", "바뀌었네요..."
+- NEVER use 음슴체 (e.g. "~됨", "~임"). Always end with ~요/~네요.
+- Every sentence must contain "..."
+- No emoji, no exclamation marks
+
+Format:
+보자... [한 줄 총평]
+
+- ...변경사항 1
+- ...변경사항 2
+"""
+
+
+def summarize_diff(diff_text: str) -> str:
+    """diff를 요약하여 PR 코멘트용 텍스트 반환
+
+    Args:
+        diff_text: format_diff_for_llm()으로 생성된 diff 문자열
+
+    Returns:
+        Scalar 스타일의 PR 요약 텍스트
+    """
+    result = _call_llm([
+        {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+        {"role": "user", "content": f"이 PR의 변경사항을 요약해줘:\n\n{diff_text}"},
+    ])
+
+    if result is None:
+        return "...요약 생성에 실패했네요."
+
+    return result["choices"][0]["message"]["content"]
+
+
 # --- 구조화된 리뷰용 ---
 
 class ReviewComment(TypedDict):
@@ -115,14 +155,17 @@ Default: comments = []. Only add a comment when you find:
 Before reporting, check surrounding code for existing guards (if/else, try/except, null checks).
 If the issue is already handled nearby, do NOT report it.
 
-Do NOT comment on:
-- Suggestions, improvements, best practices
-- "might", "could", "consider" — if not 100% certain, skip
-- Error handling, logging, validation additions
-- Environment variables, file paths, config patterns
-- Naming, style, formatting
+STRICT RULES — violating these makes your output useless:
+- NEVER suggest improvements, best practices, or "better" ways
+- NEVER use "might", "could", "consider", "~하는 게 좋을 것 같아", "~할 수 있어"
+- NEVER comment on missing error handling, logging, or validation
+- NEVER comment on environment variables, file paths, config patterns
+- NEVER comment on naming, style, or formatting
+- If you are not 100% certain it is a bug, do NOT report it
 
-Respond in Korean with cool/tsundere tone. Every body and summary must contain "...".
+Respond in polite Korean (존댓말, ~요 endings) with cool/tsundere tone.
+NEVER use 음슴체 (e.g. "~됨", "~임", "~할 수 있음"). Always end with ~요/~네요.
+Every body and summary must contain "...".
 
 diff format: number=line, "### path"=file, "+"=added line
 
