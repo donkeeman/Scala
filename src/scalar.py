@@ -157,8 +157,9 @@ If the issue is already handled nearby, do NOT report it.
 
 STRICT RULES — violating these makes your output useless:
 - NEVER suggest improvements, best practices, or "better" ways
-- NEVER use "might", "could", "consider", "~하는 게 좋을 것 같아", "~할 수 있어"
+- NEVER use "might", "could", "consider", "~하는 게 좋을 것 같아", "~할 수 있어", "~할 수 있어요", "확인해보세요", "필요해요", "필요합니다"
 - NEVER comment on missing error handling, logging, or validation
+- NEVER comment on undefined/null possibilities that "could" happen — only actual guaranteed crashes
 - NEVER comment on environment variables, file paths, config patterns
 - NEVER comment on naming, style, or formatting
 - If you are not 100% certain it is a bug, do NOT report it

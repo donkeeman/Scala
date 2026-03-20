@@ -176,7 +176,7 @@ EXCLUDE_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.wasm',
     '.map', '.lock', '.sum',
 }
-EXCLUDE_PATHS = {'examples/', 'tests/', 'test_', 'docs/', '__pycache__/'}
+EXCLUDE_PATHS = {'examples/', 'tests/', 'test/', 'test_', 'docs/', '__pycache__/'}
 MAX_CHUNK_CHARS = 6000
 
 
