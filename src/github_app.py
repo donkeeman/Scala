@@ -293,6 +293,59 @@ def get_pr_diff(repo, pr_number: int, only_files: set[str] | None = None) -> lis
     return file_diffs
 
 
+def _find_best_line(
+    comment_body: str,
+    path: str,
+    original_line: int,
+    diff_lines_by_file: dict[str, list[DiffLine]],
+    search_range: int = 10,
+) -> int | None:
+    """코멘트 body에 언급된 코드를 diff에서 찾아 가장 가까운 라인 반환
+
+    LLM이 라인 번호를 잘못 매길 때 보정용.
+    코멘트에 백틱으로 감싼 코드 조각을 추출하고, diff에서 매칭되는 라인을 찾는다.
+
+    Args:
+        comment_body: 코멘트 본문
+        path: 파일 경로
+        original_line: LLM이 제시한 라인 번호
+        diff_lines_by_file: 파일별 diff 라인 데이터
+        search_range: 원본 라인 기준 검색 범위
+
+    Returns:
+        보정된 라인 번호, 못 찾으면 None
+    """
+    lines = diff_lines_by_file.get(path, [])
+    if not lines:
+        return None
+
+    # 코멘트에서 백틱 코드 조각 추출
+    keywords: list[str] = re.findall(r'`([^`]+)`', comment_body)
+    if not keywords:
+        # 백틱 없으면 함수명/변수명 패턴 추출
+        keywords = re.findall(r'[\w.]+\(', comment_body)
+
+    if not keywords:
+        return None
+
+    # 원본 라인 근처에서 키워드 매칭하는 라인 찾기
+    best_line = None
+    best_distance = search_range + 1
+
+    for dl in lines:
+        if dl["line_number"] is None:
+            continue
+        distance = abs(dl["line_number"] - original_line)
+        if distance > search_range:
+            continue
+        for kw in keywords:
+            if kw in dl["content"] and distance < best_distance:
+                best_distance = distance
+                best_line = dl["line_number"]
+
+    return best_line
+
+
 def post_review(repo, pr_number: int, review_result: ReviewResult, file_diffs: list[FileDiff]):
     """PR에 인라인 리뷰 코멘트 달기
 
@@ -311,16 +364,29 @@ def post_review(repo, pr_number: int, review_result: ReviewResult, file_diffs: l
             if line["line_number"] is not None:
                 valid_lines.add((fd["path"], line["line_number"]))
 
-    # LLM이 잘못된 라인 번호를 줄 수 있으므로 필터링
+    # diff 라인을 파일별로 인덱싱 (라인 보정용)
+    diff_lines_by_file: dict[str, list[DiffLine]] = {}
+    for fd in file_diffs:
+        diff_lines_by_file[fd["path"]] = fd["lines"]
+
+    # LLM이 잘못된 라인 번호를 줄 수 있으므로 보정 시도
     comments = []
     for c in review_result["comments"]:
-        if (c["path"], c["line"]) not in valid_lines:
-            print(f"[post_review] 유효하지 않은 코멘트 위치 무시: {c['path']}:{c['line']}")
+        target_line = c["line"]
+
+        # body 키워드로 더 정확한 라인 검색
+        corrected = _find_best_line(c["body"], c["path"], target_line, diff_lines_by_file)
+        if corrected and corrected != target_line and (c["path"], corrected) in valid_lines:
+            print(f"[post_review] 라인 보정: {c['path']}:{target_line} -> {corrected}")
+            target_line = corrected
+
+        if (c["path"], target_line) not in valid_lines:
+            print(f"[post_review] 유효하지 않은 코멘트 위치 무시: {c['path']}:{target_line}")
             continue
 
         comments.append({
             "path": c["path"],
-            "line": c["line"],
+            "line": target_line,
             "side": "RIGHT",
             "body": c["body"],
         })
