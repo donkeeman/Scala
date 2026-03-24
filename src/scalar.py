@@ -57,7 +57,7 @@ def _call_llm_codex(messages: list[dict], temperature: float, json_mode: bool) -
 
     try:
         result = subprocess.run(
-            ["codex", "exec", "-o", "-", "-"],
+            ["codex", "exec", "-c", 'reasoning_effort="low"', "-o", "-", "-"],
             input=prompt,
             capture_output=True,
             text=True,
